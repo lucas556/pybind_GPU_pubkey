@@ -5,25 +5,27 @@
 
 namespace py = pybind11;
 
-// 单个调用
-std::vector<uint8_t> mnemonic_to_seed(const std::string& mnemonic, const std::string& passphrase) {
+// 单个助记词 → Python bytes 类型
+py::bytes mnemonic_to_seed(const std::string& mnemonic, const std::string& passphrase) {
     initSHA512Constants();
-    return mnemonicToSeedGPU(mnemonic, passphrase);
+    auto seed = mnemonicToSeedGPU(mnemonic, passphrase);
+    return py::bytes(reinterpret_cast<const char*>(seed.data()), seed.size());
 }
 
-// 批量调用（多助记词）
-std::vector<std::vector<uint8_t>> mnemonic_to_seed_batch(const std::vector<std::string>& mnemonics, const std::string& passphrase) {
+// 批量助记词 → Python bytes 列表
+std::vector<py::bytes> mnemonic_to_seed_batch(const std::vector<std::string>& mnemonics, const std::string& passphrase) {
     initSHA512Constants();
-    std::vector<std::vector<uint8_t>> results;
+    std::vector<py::bytes> results;
     results.reserve(mnemonics.size());
     for (const auto& m : mnemonics) {
-        results.push_back(mnemonicToSeedGPU(m, passphrase));
+        auto seed = mnemonicToSeedGPU(m, passphrase);
+        results.emplace_back(reinterpret_cast<const char*>(seed.data()), seed.size());
     }
     return results;
 }
 
 PYBIND11_MODULE(gpu_pbkdf2, m) {
-    m.doc() = "GPU PBKDF2-HMAC-SHA512 module with batch support";
-    m.def("mnemonic_to_seed", &mnemonic_to_seed, "Single mnemonic to seed");
-    m.def("mnemonic_to_seed_batch", &mnemonic_to_seed_batch, "Batch mnemonic to seeds");
+    m.doc() = "GPU PBKDF2-HMAC-SHA512 module with Python-native bytes return";
+    m.def("mnemonic_to_seed", &mnemonic_to_seed, "Single mnemonic to seed (returns bytes)");
+    m.def("mnemonic_to_seed_batch", &mnemonic_to_seed_batch, "Batch mnemonic to seed list (returns list of bytes)");
 }
