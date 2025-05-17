@@ -1,7 +1,7 @@
 #ifndef PBKDF2_GPU_CUH
 #define PBKDF2_GPU_CUH
 
-#include "../SHA512Test/hmac_components.cuh"
+// #include "../SHA512Test/hmac_components.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <string>
