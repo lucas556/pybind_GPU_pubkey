@@ -2,6 +2,7 @@
 #define GPU_HMAC_WRAPPER_H
 
 #include "GPUHMAC.cuh"
+#include "GPUSHA512.cuh"
 #include <vector>
 #include <cuda_runtime.h>
 #include <cstdio>
@@ -15,16 +16,39 @@ inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
     }
 }
 
+inline std::vector<unsigned char> sha512_host(const std::vector<unsigned char>& msg) {
+    uint8_t *d_in = nullptr, *d_out = nullptr;
+    std::vector<unsigned char> digest(SHA512_DIGEST_SIZE);
+
+    CudaSafeCall(cudaMalloc(&d_in, msg.size()));
+    CudaSafeCall(cudaMalloc(&d_out, SHA512_DIGEST_SIZE));
+    CudaSafeCall(cudaMemcpy(d_in, msg.data(), msg.size(), cudaMemcpyHostToDevice));
+
+    sha512_kernel<<<1, 1>>>(d_in, msg.size(), d_out);
+    CudaSafeCall(cudaDeviceSynchronize());
+
+    CudaSafeCall(cudaMemcpy(digest.data(), d_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost));
+
+    cudaFree(d_in);
+    cudaFree(d_out);
+    return digest;
+}
+
 /**
- * run_hmac_sha512_gpu
+ * hmac_sha512_gpu
  * 用于 BIP32 CKDpriv 的子步骤（seed 派生建议使用 mnemonicToSeedGPU）。
  * key: 用于 HMAC 的 key，一般为 chain code。
  * data: HMAC 输入数据。
  * 返回值：SHA512 digest（64字节）。
  */
-inline std::vector<unsigned char> run_hmac_sha512_gpu(const std::vector<unsigned char>& key,
-                                                      const std::vector<unsigned char>& data) {
-    const size_t key_len = key.size();
+inline std::vector<unsigned char> hmac_sha512_gpu(const std::vector<unsigned char>& key,
+                                                  const std::vector<unsigned char>& data) {
+    std::vector<unsigned char> safe_key = key;
+    if (safe_key.size() > HMAC_BLOCK_SIZE) {
+        safe_key = sha512_host(safe_key);
+    }
+
+    const size_t key_len = safe_key.size();
     const size_t data_len = data.size();
 
     BYTE* d_key = nullptr;
@@ -39,7 +63,7 @@ inline std::vector<unsigned char> run_hmac_sha512_gpu(const std::vector<unsigned
     CudaSafeCall(cudaMalloc(&d_output, SHA512_DIGEST_SIZE));
 
     // 2. 拷贝数据到 GPU
-    CudaSafeCall(cudaMemcpy(d_key, key.data(), key_len, cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMemcpy(d_key, safe_key.data(), key_len, cudaMemcpyHostToDevice));
     CudaSafeCall(cudaMemcpy(d_data, data.data(), data_len, cudaMemcpyHostToDevice));
 
     // 3. 调用 GPU HMAC Kernel
