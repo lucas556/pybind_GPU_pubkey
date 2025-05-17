@@ -1,11 +1,10 @@
-
-#include "GPUSecp.h"
+#include "GPUSecpKernel.h"
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
-#include "GPUMath.h"
-#include "GPUHash.h"
+#include "GPUSecpMath.h"
+#include "GPUSecpHash.h"
 
 using namespace std;
 
@@ -20,12 +19,12 @@ inline void __cudaSafeCall(cudaError err, const char *file, const int line)
 }
 
 GPUSecp::GPUSecp(
-  	int countPrime, 
-		int countAffix,
+        int countPrime, 
+                int countAffix,
     const uint8_t *gTableXCPU,
     const uint8_t *gTableYCPU,
-		const uint8_t * inputBookPrimeCPU, 
-		const uint8_t * inputBookAffixCPU, 
+                const uint8_t * inputBookPrimeCPU, 
+                const uint8_t * inputBookAffixCPU, 
     const uint64_t *inputHashBufferCPU
     )
 {
@@ -297,12 +296,12 @@ void GPUSecp::doPrintOutput() {
     if (outputBufferCPU[idxThread] > 0) {
       printf("HASH: ");
       for (int h = 0; h < SIZE_HASH160; h++) {
-				printf("%02X", outputHashesCPU[(idxThread * SIZE_HASH160) + h]);
-			}
+                                printf("%02X", outputHashesCPU[(idxThread * SIZE_HASH160) + h]);
+                        }
       printf(" PRIV: ");
       for (int k = 0; k < SIZE_PRIV_KEY; k++) {
-				printf("%02X", outputPrivKeysCPU[(idxThread * SIZE_PRIV_KEY) + k]);
-			}
+                                printf("%02X", outputPrivKeysCPU[(idxThread * SIZE_PRIV_KEY) + k]);
+                        }
       printf("\n");
 
       FILE *file = stdout;
