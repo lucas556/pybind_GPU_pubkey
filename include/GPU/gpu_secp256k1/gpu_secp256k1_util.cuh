@@ -3,8 +3,11 @@
 
 #include "secp256k1.cuh"
 #include "sha256.cuh"
+#include <vector>
+#include <stdexcept>
+#include <cuda_runtime.h>
 
-__device__ __forceinline__ void scalar_to_bigint(const uint8_t privkey[32], unsigned int out[8]) {
+__device__ __forceinline__ void scalar_bigint(const uint8_t privkey[32], unsigned int out[8]) {
     #pragma unroll
     for (int i = 0; i < 8; i++) {
         out[i] = ((unsigned int)privkey[i * 4 + 0] << 24) |
@@ -14,18 +17,17 @@ __device__ __forceinline__ void scalar_to_bigint(const uint8_t privkey[32], unsi
     }
 }
 
-__device__ void scalar_multiply_and_compress_pubkey(
+__device__ void scalar_multiply_unpubkey(
     const uint8_t privkey[32],
-    uint8_t compressed_pubkey[33]
+    uint8_t uncompressed_pubkey[64]
 ) {
     unsigned int scalar[8];
-    scalar_to_bigint(privkey, scalar);
+    scalar_bigint(privkey, scalar);
 
     unsigned int x[8], y[8];
     copyBigInt(_GX, x);
     copyBigInt(_GY, y);
 
-    // Perform scalar multiplication via double-and-add
     for (int i = 255; i >= 0; i--) {
         squareModP(x);
         squareModP(y);
@@ -35,15 +37,42 @@ __device__ void scalar_multiply_and_compress_pubkey(
         }
     }
 
-    // Compress public key
-    compressed_pubkey[0] = (y[0] & 1) ? 0x03 : 0x02;
     #pragma unroll
     for (int i = 0; i < 8; i++) {
-        compressed_pubkey[1 + i * 4 + 0] = (x[i] >> 24) & 0xFF;
-        compressed_pubkey[1 + i * 4 + 1] = (x[i] >> 16) & 0xFF;
-        compressed_pubkey[1 + i * 4 + 2] = (x[i] >> 8) & 0xFF;
-        compressed_pubkey[1 + i * 4 + 3] = (x[i] >> 0) & 0xFF;
+        uncompressed_pubkey[i * 4 + 0] = (x[i] >> 24) & 0xFF;
+        uncompressed_pubkey[i * 4 + 1] = (x[i] >> 16) & 0xFF;
+        uncompressed_pubkey[i * 4 + 2] = (x[i] >> 8) & 0xFF;
+        uncompressed_pubkey[i * 4 + 3] = (x[i] >> 0) & 0xFF;
+        uncompressed_pubkey[32 + i * 4 + 0] = (y[i] >> 24) & 0xFF;
+        uncompressed_pubkey[32 + i * 4 + 1] = (y[i] >> 16) & 0xFF;
+        uncompressed_pubkey[32 + i * 4 + 2] = (y[i] >> 8) & 0xFF;
+        uncompressed_pubkey[32 + i * 4 + 3] = (y[i] >> 0) & 0xFF;
     }
+}
+
+__global__ void unpubkey_kernel(const uint8_t* privkey_in, uint8_t* pubkey_out) {
+    scalar_multiply_unpubkey(privkey_in, pubkey_out);
+}
+
+inline std::vector<uint8_t> derive_unpublickey(const std::vector<uint8_t>& privkey) {
+    if (privkey.size() != 32) throw std::runtime_error("Private key must be 32 bytes");
+
+    uint8_t* d_privkey;
+    uint8_t* d_pubkey;
+    cudaMalloc(&d_privkey, 32);
+    cudaMalloc(&d_pubkey, 64);
+
+    cudaMemcpy(d_privkey, privkey.data(), 32, cudaMemcpyHostToDevice);
+    unpubkey_kernel<<<1, 1>>>(d_privkey, d_pubkey);
+    cudaDeviceSynchronize();
+
+    std::vector<uint8_t> pubkey(64);
+    cudaMemcpy(pubkey.data(), d_pubkey, 64, cudaMemcpyDeviceToHost);
+
+    cudaFree(d_privkey);
+    cudaFree(d_pubkey);
+
+    return pubkey;
 }
 
 #endif
