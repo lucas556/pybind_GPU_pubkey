@@ -1,12 +1,15 @@
-#ifndef GPU_HMAC_WRAPPER_H
-#define GPU_HMAC_WRAPPER_H
+#include <cuda_runtime.h>
+#include <vector>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "GPUHMAC.cuh"
 #include "GPUSHA512.cuh"
-#include <vector>
-#include <cuda_runtime.h>
-#include <cstdio>
-#include <cstdlib>
+
+// 常量定义
+#define HMAC_BLOCK_SIZE 128
+#define SHA512_DIGEST_SIZE 64
 
 #define CudaSafeCall(err) __cudaSafeCall(err, __FILE__, __LINE__)
 inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
@@ -16,7 +19,8 @@ inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
     }
 }
 
-inline std::vector<unsigned char> sha512_host(const std::vector<unsigned char>& msg) {
+// SHA512 主机端计算（用于 HMAC 长 key 预处理）
+std::vector<unsigned char> sha512_host(const std::vector<unsigned char>& msg) {
     uint8_t *d_in = nullptr, *d_out = nullptr;
     std::vector<unsigned char> digest(SHA512_DIGEST_SIZE);
 
@@ -34,15 +38,9 @@ inline std::vector<unsigned char> sha512_host(const std::vector<unsigned char>& 
     return digest;
 }
 
-/**
- * hmac_sha512_gpu
- * 用于 BIP32 CKDpriv 的子步骤（seed 派生建议使用 mnemonicToSeedGPU）。
- * key: 用于 HMAC 的 key，一般为 chain code。
- * data: HMAC 输入数据。
- * 返回值：SHA512 digest（64字节）。
- */
-inline std::vector<unsigned char> hmac_sha512_gpu(const std::vector<unsigned char>& key,
-                                                  const std::vector<unsigned char>& data) {
+// HMAC-SHA512 GPU 实现（供内部或 C 接口使用）
+std::vector<unsigned char> hmac_sha512_gpu(const std::vector<unsigned char>& key,
+                                           const std::vector<unsigned char>& data) {
     std::vector<unsigned char> safe_key = key;
     if (safe_key.size() > HMAC_BLOCK_SIZE) {
         safe_key = sha512_host(safe_key);
@@ -54,32 +52,23 @@ inline std::vector<unsigned char> hmac_sha512_gpu(const std::vector<unsigned cha
     BYTE* d_key = nullptr;
     BYTE* d_data = nullptr;
     BYTE* d_output = nullptr;
-
     std::vector<unsigned char> result(SHA512_DIGEST_SIZE);
 
-    // 1. 分配 GPU 内存（加错误检查）
     CudaSafeCall(cudaMalloc(&d_key, key_len));
     CudaSafeCall(cudaMalloc(&d_data, data_len));
     CudaSafeCall(cudaMalloc(&d_output, SHA512_DIGEST_SIZE));
 
-    // 2. 拷贝数据到 GPU
     CudaSafeCall(cudaMemcpy(d_key, safe_key.data(), key_len, cudaMemcpyHostToDevice));
     CudaSafeCall(cudaMemcpy(d_data, data.data(), data_len, cudaMemcpyHostToDevice));
 
-    // 3. 调用 GPU HMAC Kernel
-    hmac_sha512_kernel<<<1, 1>>>(reinterpret_cast<const char*>(d_key), key_len,
-                                 d_data, data_len, d_output);
+    hmac_sha512_kernel<<<1, 1>>>((const char*)d_key, key_len, d_data, data_len, d_output);
     CudaSafeCall(cudaDeviceSynchronize());
 
-    // 4. 拷贝结果回 Host
     CudaSafeCall(cudaMemcpy(result.data(), d_output, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost));
 
-    // 5. 清理资源
-    CudaSafeCall(cudaFree(d_key));
-    CudaSafeCall(cudaFree(d_data));
-    CudaSafeCall(cudaFree(d_output));
+    cudaFree(d_key);
+    cudaFree(d_data);
+    cudaFree(d_output);
 
     return result;
 }
-
-#endif // GPU_HMAC_WRAPPER_H
