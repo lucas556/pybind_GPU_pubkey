@@ -72,20 +72,3 @@ std::vector<unsigned char> hmac_sha512_gpu(const std::vector<unsigned char>& key
 
     return result;
 }
-
-// 暴露的 C 接口（供 C++ 动态加载 .so 调用）
-extern "C" {
-
-// HMAC-SHA512 GPU 接口（外部调用）
-unsigned char* hmac_sha512_interface(const unsigned char* key, size_t key_len,
-                                     const unsigned char* data, size_t data_len) {
-    std::vector<unsigned char> key_vec(key, key + key_len);
-    std::vector<unsigned char> data_vec(data, data + data_len);
-    std::vector<unsigned char> result = hmac_sha512_gpu(key_vec, data_vec);
-
-    unsigned char* output = (unsigned char*)malloc(result.size());
-    memcpy(output, result.data(), result.size());
-    return output;
-}
-
-}
