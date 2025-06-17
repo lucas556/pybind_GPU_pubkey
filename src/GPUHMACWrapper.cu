@@ -72,3 +72,31 @@ std::vector<unsigned char> hmac_sha512_gpu(const std::vector<unsigned char>& key
 
     return result;
 }
+
+__global__ void derive_masterkey_kernel(
+    const char* __restrict__ mnemonics,
+    const char* __restrict__ passphrases,
+    const size_t* __restrict__ mnemonic_offsets,
+    const size_t* __restrict__ passphrase_offsets,
+    uint8_t* out_privkeys,
+    uint8_t* out_chaincodes,
+    int count
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+
+    const char* mnemonic = mnemonics + mnemonic_offsets[idx];
+    const char* passphrase = passphrases + passphrase_offsets[idx];
+    uint8_t seed[64];
+    uint8_t hmac_out[64];
+
+    pbkdf2_mnemonic_to_seed(mnemonic, passphrase, seed); // GPU PBKDF2
+    const char* key = "Bitcoin seed";
+    hmac_sha512((const uint8_t*)key, strlen(key), seed, 64, hmac_out); // GPU 内 HMAC
+
+    for (int i = 0; i < 32; ++i) {
+        out_privkeys[idx * 32 + i] = hmac_out[i];
+        out_chaincodes[idx * 32 + i] = hmac_out[i + 32];
+    }
+}
+
