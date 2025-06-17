@@ -17,7 +17,6 @@ struct HMAC_CTX {
     SHA512_CTX outer;
     BYTE ipad[HMAC_BLOCK_SIZE];
     BYTE opad[HMAC_BLOCK_SIZE];
-    bool debug;
 };
 
 __device__ void hmac_sha512_init(HMAC_CTX* ctx, const BYTE* key, size_t key_len) {
@@ -104,7 +103,6 @@ __global__ void pbkdf2_kernel(const char* password, size_t password_len,
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < 1) { // Para seed de 512 bits, precisamos apenas de 1 bloco
         HMAC_CTX hmac_ctx;
-        hmac_ctx.debug = true;
         hmac_sha512_init(&hmac_ctx, (const BYTE*)password, password_len);
         F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, idx + 1, output + (idx * SHA512_DIGEST_SIZE));
     }
