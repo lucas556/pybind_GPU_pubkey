@@ -1,5 +1,3 @@
-// GPUWrapper.cu
-
 #include <cuda_runtime.h>
 #include <vector>
 #include <string>
@@ -17,6 +15,16 @@
 #define SEED_SIZE 64
 #define HMAC_BLOCK_SIZE 128
 
+// === CUDA 错误包装宏 ===
+#define CudaSafeCall(err) __cudaSafeCall(err, __FILE__, __LINE__)
+inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA error at " << file << ":" << line << ": "
+                  << cudaGetErrorString(err) << std::endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
 typedef std::vector<unsigned char> ByteVec;
 
 __host__ std::pair<ByteVec, ByteVec> derive_master_key(const std::string& mnemonic, const std::string& passphrase) {
@@ -26,44 +34,44 @@ __host__ std::pair<ByteVec, ByteVec> derive_master_key(const std::string& mnemon
     std::string salt = "mnemonic" + passphrase;
     char *d_mnemonic, *d_salt;
     BYTE *d_seed;
-    cudaMalloc(&d_mnemonic, mnemonic.size());
-    cudaMalloc(&d_salt, salt.size());
-    cudaMalloc(&d_seed, SEED_SIZE);
+    CudaSafeCall(cudaMalloc(&d_mnemonic, mnemonic.size()));
+    CudaSafeCall(cudaMalloc(&d_salt, salt.size()));
+    CudaSafeCall(cudaMalloc(&d_seed, SEED_SIZE));
 
-    cudaMemcpy(d_mnemonic, mnemonic.data(), mnemonic.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_salt, salt.data(), salt.size(), cudaMemcpyHostToDevice);
+    CudaSafeCall(cudaMemcpy(d_mnemonic, mnemonic.data(), mnemonic.size(), cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMemcpy(d_salt, salt.data(), salt.size(), cudaMemcpyHostToDevice));
 
     pbkdf2_kernel<<<1, 1>>>(d_mnemonic, mnemonic.size(), d_salt, salt.size(), PBKDF2_HMAC_SHA512_ITERATIONS, d_seed);
-    cudaDeviceSynchronize();
+    CudaSafeCall(cudaDeviceSynchronize());
 
     ByteVec seed(SEED_SIZE);
-    cudaMemcpy(seed.data(), d_seed, SEED_SIZE, cudaMemcpyDeviceToHost);
+    CudaSafeCall(cudaMemcpy(seed.data(), d_seed, SEED_SIZE, cudaMemcpyDeviceToHost));
 
-    cudaFree(d_mnemonic);
-    cudaFree(d_salt);
-    cudaFree(d_seed);
+    CudaSafeCall(cudaFree(d_mnemonic));
+    CudaSafeCall(cudaFree(d_salt));
+    CudaSafeCall(cudaFree(d_seed));
 
     // 2. === HMAC-SHA512(seed, key="Bitcoin seed") ===
     const char* hmac_key = BITCOIN_SEED;
     size_t key_len = strlen(hmac_key);
 
     BYTE *d_key, *d_data, *d_hmac_out;
-    cudaMalloc(&d_key, key_len);
-    cudaMalloc(&d_data, SEED_SIZE);
-    cudaMalloc(&d_hmac_out, SHA512_DIGEST_SIZE);
+    CudaSafeCall(cudaMalloc(&d_key, key_len));
+    CudaSafeCall(cudaMalloc(&d_data, SEED_SIZE));
+    CudaSafeCall(cudaMalloc(&d_hmac_out, SHA512_DIGEST_SIZE));
 
-    cudaMemcpy(d_key, hmac_key, key_len, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_data, seed.data(), SEED_SIZE, cudaMemcpyHostToDevice);
+    CudaSafeCall(cudaMemcpy(d_key, hmac_key, key_len, cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMemcpy(d_data, seed.data(), SEED_SIZE, cudaMemcpyHostToDevice));
 
     hmac_sha512_kernel<<<1, 1>>>((const char*)d_key, key_len, d_data, SEED_SIZE, d_hmac_out);
-    cudaDeviceSynchronize();
+    CudaSafeCall(cudaDeviceSynchronize());
 
     ByteVec I(SHA512_DIGEST_SIZE);
-    cudaMemcpy(I.data(), d_hmac_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost);
+    CudaSafeCall(cudaMemcpy(I.data(), d_hmac_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost));
 
-    cudaFree(d_key);
-    cudaFree(d_data);
-    cudaFree(d_hmac_out);
+    CudaSafeCall(cudaFree(d_key));
+    CudaSafeCall(cudaFree(d_data));
+    CudaSafeCall(cudaFree(d_hmac_out));
 
     if (I.size() != 64) throw std::runtime_error("HMAC result is not 64 bytes");
 
@@ -83,38 +91,43 @@ __host__ std::vector<unsigned char> hmac_sha512(
 
     if (prehash_key) {
         BYTE *d_tmp_in = nullptr, *d_tmp_out = nullptr;
-        cudaMalloc(&d_tmp_in, key.size());
-        cudaMalloc(&d_tmp_out, SHA512_DIGEST_SIZE);
-        cudaMemcpy(d_tmp_in, key.data(), key.size(), cudaMemcpyHostToDevice);
+        CudaSafeCall(cudaMalloc(&d_tmp_in, key.size()));
+        CudaSafeCall(cudaMalloc(&d_tmp_out, SHA512_DIGEST_SIZE));
+        CudaSafeCall(cudaMemcpy(d_tmp_in, key.data(), key.size(), cudaMemcpyHostToDevice));
 
         sha512_kernel<<<1, 1>>>(d_tmp_in, key.size(), d_tmp_out);
-        cudaDeviceSynchronize();
+        CudaSafeCall(cudaDeviceSynchronize());
 
-        cudaMalloc(&d_key, SHA512_DIGEST_SIZE);
-        cudaMemcpy(d_key, d_tmp_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToDevice);
+        CudaSafeCall(cudaMalloc(&d_key, SHA512_DIGEST_SIZE));
+        CudaSafeCall(cudaMemcpy(d_key, d_tmp_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToDevice));
         final_key_len = SHA512_DIGEST_SIZE;
 
-        cudaFree(d_tmp_in);
-        cudaFree(d_tmp_out);
+        CudaSafeCall(cudaFree(d_tmp_in));
+        CudaSafeCall(cudaFree(d_tmp_out));
     } else {
-        cudaMalloc(&d_key, key.size());
-        cudaMemcpy(d_key, key.data(), key.size(), cudaMemcpyHostToDevice);
+        CudaSafeCall(cudaMalloc(&d_key, key.size()));
+        CudaSafeCall(cudaMemcpy(d_key, key.data(), key.size(), cudaMemcpyHostToDevice));
     }
 
-    cudaMalloc(&d_data, data.size());
-    cudaMemcpy(d_data, data.data(), data.size(), cudaMemcpyHostToDevice);
-    cudaMalloc(&d_out, SHA512_DIGEST_SIZE);
+    CudaSafeCall(cudaMalloc(&d_data, data.size()));
+    CudaSafeCall(cudaMemcpy(d_data, data.data(), data.size(), cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMalloc(&d_out, SHA512_DIGEST_SIZE));
 
     hmac_sha512_kernel<<<1, 1>>>((const char*)d_key, final_key_len, d_data, data.size(), d_out);
-    cudaDeviceSynchronize();
+    CudaSafeCall(cudaDeviceSynchronize());
 
     std::vector<unsigned char> result(SHA512_DIGEST_SIZE);
-    cudaMemcpy(result.data(), d_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost);
+    CudaSafeCall(cudaMemcpy(result.data(), d_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost));
 
-    cudaFree(d_key);
-    cudaFree(d_data);
-    cudaFree(d_out);
+    CudaSafeCall(cudaFree(d_key));
+    CudaSafeCall(cudaFree(d_data));
+    CudaSafeCall(cudaFree(d_out));
 
     return result;
 }
 
+
+#undef BITCOIN_SEED
+#undef SHA512_DIGEST_SIZE
+#undef SEED_SIZE
+#undef HMAC_BLOCK_SIZE
