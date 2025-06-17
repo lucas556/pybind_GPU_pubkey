@@ -1,7 +1,6 @@
 #ifndef PBKDF2_GPU_CUH
 #define PBKDF2_GPU_CUH
 
-// #include "../SHA512Test/hmac_components.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <string>
@@ -110,53 +109,3 @@ __global__ void pbkdf2_kernel(const char* password, size_t password_len,
         F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, idx + 1, output + (idx * SHA512_DIGEST_SIZE));
     }
 }
-
-__global__ void xor_results_kernel(BYTE* result, const BYTE* prev) {
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx < 64) {
-        result[idx] ^= prev[idx];
-    }
-}
-
-std::vector<unsigned char> mnemonicToSeedGPU(const std::string& mnemonic, const std::string& passphrase) {
-    // Preparar o salt (mnemonic + passphrase)
-    std::string salt = "mnemonic" + passphrase;
-    
-    // Alocar memória na GPU
-    char *d_mnemonic, *d_salt;
-    BYTE *d_output;
-    cudaMalloc(&d_mnemonic, mnemonic.length());
-    cudaMalloc(&d_salt, salt.length());
-    cudaMalloc(&d_output, 64);  // 512 bits = 64 bytes
-
-    // Copiar dados para GPU
-    cudaMemcpy(d_mnemonic, mnemonic.c_str(), mnemonic.length(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_salt, salt.c_str(), salt.length(), cudaMemcpyHostToDevice);
-
-    // Executar PBKDF2
-    pbkdf2_kernel<<<1, 1>>>((const char*)d_mnemonic, mnemonic.length(),
-                           (const char*)d_salt, salt.length(),
-                           PBKDF2_HMAC_SHA512_ITERATIONS,
-                           d_output);
-    
-    // Verificar erros
-    cudaError_t err = cudaDeviceSynchronize();
-    if (err != cudaSuccess) {
-        printf("Erro CUDA: %s\n", cudaGetErrorString(err));
-    }
-
-    // Copiar resultado de volta
-    std::vector<unsigned char> seed(64);
-    cudaMemcpy(seed.data(), d_output, 64, cudaMemcpyDeviceToHost);
-
-    // Limpar memória
-    cudaFree(d_mnemonic);
-    cudaFree(d_salt);
-    cudaFree(d_output);
-
-    return seed;
-}
-
-std::vector<unsigned char> mnemonicToSeedGPU(const std::string& mnemonic, const std::string& passphrase);
-
-#endif
