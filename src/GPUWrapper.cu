@@ -82,51 +82,62 @@ __host__ std::pair<ByteVec, ByteVec> derive_master_key(const std::string& mnemon
     };
 }
 
-__host__ std::vector<unsigned char> hmac_sha512(
-    const std::vector<unsigned char>& key,
-    const std::vector<unsigned char>& data,
-    bool prehash_key
+__global__ void ckd_data_kernel(
+    const uint8_t* left_or_pubkey, bool hardened,
+    uint32_t index, uint8_t* data_out
 ) {
-    BYTE *d_key = nullptr, *d_data = nullptr, *d_out = nullptr;
-    size_t final_key_len = key.size();
+    int offset = 0;
 
-    if (prehash_key) {
-        BYTE *d_tmp_in = nullptr, *d_tmp_out = nullptr;
-        CudaSafeCall(cudaMalloc(&d_tmp_in, key.size()));
-        CudaSafeCall(cudaMalloc(&d_tmp_out, SHA512_DIGEST_SIZE));
-        CudaSafeCall(cudaMemcpy(d_tmp_in, key.data(), key.size(), cudaMemcpyHostToDevice));
-
-        sha512_kernel<<<1, 1>>>(d_tmp_in, key.size(), d_tmp_out);
-        CudaSafeCall(cudaDeviceSynchronize());
-
-        CudaSafeCall(cudaMalloc(&d_key, SHA512_DIGEST_SIZE));
-        CudaSafeCall(cudaMemcpy(d_key, d_tmp_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToDevice));
-        final_key_len = SHA512_DIGEST_SIZE;
-
-        CudaSafeCall(cudaFree(d_tmp_in));
-        CudaSafeCall(cudaFree(d_tmp_out));
+    if (hardened) {
+        data_out[offset++] = 0x00;
+        for (int i = 0; i < 32; ++i)
+            data_out[offset++] = left_or_pubkey[i];
     } else {
-        CudaSafeCall(cudaMalloc(&d_key, key.size()));
-        CudaSafeCall(cudaMemcpy(d_key, key.data(), key.size(), cudaMemcpyHostToDevice));
+        for (int i = 0; i < 33; ++i)
+            data_out[offset++] = left_or_pubkey[i];
     }
 
-    CudaSafeCall(cudaMalloc(&d_data, data.size()));
-    CudaSafeCall(cudaMemcpy(d_data, data.data(), data.size(), cudaMemcpyHostToDevice));
+    data_out[offset++] = (index >> 24) & 0xFF;
+    data_out[offset++] = (index >> 16) & 0xFF;
+    data_out[offset++] = (index >> 8) & 0xFF;
+    data_out[offset++] = index & 0xFF;
+}
+
+// host端封装
+std::vector<unsigned char> hmac_sha512_data(
+    const std::vector<unsigned char>& key,
+    const std::vector<unsigned char>& left_or_pubkey,
+    bool hardened,
+    uint32_t index
+) {
+    BYTE *d_key, *d_data, *d_out, *d_left;
+    int data_len = hardened ? (1 + 32 + 4) : (33 + 4);
+
+    // 1. GPU 内存分配
+    CudaSafeCall(cudaMalloc(&d_key, key.size()));
+    CudaSafeCall(cudaMemcpy(d_key, key.data(), key.size(), cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMalloc(&d_left, left_or_pubkey.size()));
+    CudaSafeCall(cudaMemcpy(d_left, left_or_pubkey.data(), left_or_pubkey.size(), cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMalloc(&d_data, data_len));
     CudaSafeCall(cudaMalloc(&d_out, SHA512_DIGEST_SIZE));
 
-    hmac_sha512_kernel<<<1, 1>>>((const char*)d_key, final_key_len, d_data, data.size(), d_out);
+    // 2. 构造 CKD 数据
+    ckd_data_kernel<<<1, 1>>>(d_left, hardened, index, d_data);
     CudaSafeCall(cudaDeviceSynchronize());
 
+    // 3. 执行 HMAC
+    hmac_sha512_kernel<<<1, 1>>>((const char*)d_key, key.size(), d_data, data_len, d_out);
+    CudaSafeCall(cudaDeviceSynchronize());
+
+    // 4. 读取结果
     std::vector<unsigned char> result(SHA512_DIGEST_SIZE);
     CudaSafeCall(cudaMemcpy(result.data(), d_out, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost));
 
-    CudaSafeCall(cudaFree(d_key));
-    CudaSafeCall(cudaFree(d_data));
-    CudaSafeCall(cudaFree(d_out));
+    // 5. 清理资源
+    cudaFree(d_key); cudaFree(d_left); cudaFree(d_data); cudaFree(d_out);
 
     return result;
 }
-
 
 #undef BITCOIN_SEED
 #undef SHA512_DIGEST_SIZE
