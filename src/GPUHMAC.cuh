@@ -2,6 +2,7 @@
 #define GPU_HMAC_CUH
 
 #include "GPUSHA512.cuh"
+#include "GPUWrapper.cuh" 
 
 typedef std::vector<unsigned char> ByteVec;
 
