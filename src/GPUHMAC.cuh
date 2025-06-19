@@ -3,7 +3,7 @@
 
 #include "GPUSHA512.cuh"
 
-#define BLOCK_SIZE 128  // SHA-512 block size in bytes
+#define HMAC_BLOCK_SIZE 128
 
 /*
 __global__ void hmac_sha512_kernel(const char* key, size_t key_len, const BYTE* data, size_t data_len, BYTE* output) {
