@@ -3,6 +3,8 @@
 
 #include "GPUSHA512.cuh"
 
+typedef std::vector<unsigned char> ByteVec;
+
 __global__ void hmac_sha512_kernel(
     const BYTE* const* keys, const size_t* key_lens,
     const BYTE* const* datas, const size_t* data_lens,
