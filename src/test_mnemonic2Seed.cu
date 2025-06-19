@@ -5,7 +5,9 @@
 #include <stdexcept>
 #include <secp256k1.h>
 
-#include "GPUWrapper.cuh" 
+#include "GPUSHA512.cuh"
+#include "GPUPBKDF2.cuh"
+#include "GPUHMAC.cuh"
 
 #define BITCOIN_SEED "Bitcoin seed"
 #define MAX_CKD_DATA_SIZE (1 + 32 + 4)
