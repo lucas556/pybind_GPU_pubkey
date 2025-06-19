@@ -11,8 +11,6 @@
 #include "GPUSHA512.cuh"
 #include "GPUPBKDF2.cuh"
 #include "GPUHMAC.cuh"
-#include "constants.cuh"
-
 
 #define CudaSafeCall(err) __cudaSafeCall(err, __FILE__, __LINE__)
 inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
