@@ -5,6 +5,7 @@
 
 #define BLOCK_SIZE 128  // SHA-512 block size in bytes
 
+/*
 __global__ void hmac_sha512_kernel(const char* key, size_t key_len, const BYTE* data, size_t data_len, BYTE* output) {
 
     // Alinhar buffers para melhor performance e consistência
@@ -47,6 +48,54 @@ __global__ void hmac_sha512_kernel(const char* key, size_t key_len, const BYTE* 
     sha512_final(&ctx_out, output);
     memcpy(initial_output, output, SHA512_DIGEST_SIZE);
 
+}
+*/
+
+__global__ void hmac_sha512_kernel(
+    const BYTE* const* keys, const size_t* key_lens,
+    const BYTE* const* datas, const size_t* data_lens,
+    BYTE* outputs, int count
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+
+    const BYTE* key = keys[idx];
+    size_t key_len = key_lens[idx];
+    const BYTE* data = datas[idx];
+    size_t data_len = data_lens[idx];
+    BYTE* out = outputs + idx * SHA512_DIGEST_SIZE;
+
+    BYTE k[HMAC_BLOCK_SIZE] = {0};
+    BYTE k_ipad[HMAC_BLOCK_SIZE];
+    BYTE k_opad[HMAC_BLOCK_SIZE];
+    BYTE inner_hash[SHA512_DIGEST_SIZE];
+
+    if (key_len > HMAC_BLOCK_SIZE) {
+        SHA512_CTX ctx;
+        sha512_init(&ctx);
+        sha512_update(&ctx, key, key_len);
+        sha512_final(&ctx, k);
+        key_len = SHA512_DIGEST_SIZE;
+    } else {
+        memcpy(k, key, key_len);
+    }
+
+    for (int i = 0; i < HMAC_BLOCK_SIZE; i++) {
+        k_ipad[i] = k[i] ^ 0x36;
+        k_opad[i] = k[i] ^ 0x5c;
+    }
+
+    SHA512_CTX ctx_in;
+    sha512_init(&ctx_in);
+    sha512_update(&ctx_in, k_ipad, HMAC_BLOCK_SIZE);
+    sha512_update(&ctx_in, data, data_len);
+    sha512_final(&ctx_in, inner_hash);
+
+    SHA512_CTX ctx_out;
+    sha512_init(&ctx_out);
+    sha512_update(&ctx_out, k_opad, HMAC_BLOCK_SIZE);
+    sha512_update(&ctx_out, inner_hash, SHA512_DIGEST_SIZE);
+    sha512_final(&ctx_out, out);
 }
 
 #endif // GPU_HMAC_CUH
