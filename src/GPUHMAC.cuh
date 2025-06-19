@@ -2,9 +2,17 @@
 #define GPU_HMAC_CUH
 
 #include "GPUSHA512.cuh"
-#include "GPUWrapper.cuh" 
 
 typedef std::vector<unsigned char> ByteVec;
+
+#define CudaSafeCall(err) __cudaSafeCall(err, __FILE__, __LINE__)
+inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA error at " << file << ":" << line << ": "
+                  << cudaGetErrorString(err) << std::endl;
+        exit(EXIT_FAILURE);
+    }
+}
 
 __global__ void hmac_sha512_kernel(
     const BYTE* const* keys, const size_t* key_lens,
