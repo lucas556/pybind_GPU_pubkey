@@ -96,14 +96,22 @@ __device__ void F(HMAC_CTX* ctx, const BYTE* salt, size_t salt_len,
     }
 }
 
-__global__ void pbkdf2_kernel(const char* password, size_t password_len,
-                            const char* salt, size_t salt_len,
-                            uint32_t iterations,
-                            BYTE* output) {
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < 1) { // Para seed de 512 bits, precisamos apenas de 1 bloco
-        HMAC_CTX hmac_ctx;
-        hmac_sha512_init(&hmac_ctx, (const BYTE*)password, password_len);
-        F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, idx + 1, output + (idx * SHA512_DIGEST_SIZE));
-    }
+__global__ void pbkdf2_kernel(
+    char** d_mnemonics, size_t* d_mnemonic_lens,
+    char** d_salts, size_t* d_salt_lens,
+    uint32_t iterations, BYTE* d_out_seeds, int count
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+
+    const char* mnemonic = d_mnemonics[idx];
+    size_t mnemonic_len = d_mnemonic_lens[idx];
+    const char* salt = d_salts[idx];
+    size_t salt_len = d_salt_lens[idx];
+    BYTE* output = d_out_seeds + idx * SEED_SIZE;
+
+    HMAC_CTX hmac_ctx;
+    hmac_sha512_init(&hmac_ctx, (const BYTE*)mnemonic, mnemonic_len);
+    F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, 1, output);
 }
+
