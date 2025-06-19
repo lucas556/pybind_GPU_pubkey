@@ -12,6 +12,7 @@
 #include "GPUPBKDF2.cuh"
 #include "GPUHMAC.cuh"
 
+/*
 #define CudaSafeCall(err) __cudaSafeCall(err, __FILE__, __LINE__)
 inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
     if (err != cudaSuccess) {
@@ -20,7 +21,7 @@ inline void __cudaSafeCall(cudaError_t err, const char *file, const int line) {
         exit(EXIT_FAILURE);
     }
 }
-
+*/
 __global__ void ckd_data_kernel_batch(
     unsigned char** pubkeys_or_lefts,  // 注意：取消 const BYTE**
     const uint8_t* hardened,
