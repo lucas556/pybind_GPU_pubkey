@@ -9,21 +9,20 @@
 
 #define PBKDF2_HMAC_SHA512_ITERATIONS 2048
 #define SEED_SIZE 64  // 512 bits
-#define HMAC_BLOCK_SIZE 128  // SHA-512 block size
 
 // Estrutura para armazenar o contexto do HMAC
 struct HMAC_CTX {
     SHA512_CTX inner;
     SHA512_CTX outer;
-    BYTE ipad[HMAC_BLOCK_SIZE];
-    BYTE opad[HMAC_BLOCK_SIZE];
+    BYTE ipad[SHA512_BLOCK_SIZE];
+    BYTE opad[SHA512_BLOCK_SIZE];
 };
 
 __device__ void hmac_sha512_init(HMAC_CTX* ctx, const BYTE* key, size_t key_len) {
-    BYTE k[HMAC_BLOCK_SIZE] = {0};
+    BYTE k[SHA512_BLOCK_SIZE] = {0};
     
     // Se a chave for maior que o tamanho do bloco, faça o hash dela
-    if (key_len > HMAC_BLOCK_SIZE) {
+    if (key_len > SHA512_BLOCK_SIZE) {
         SHA512_CTX sha_ctx;
         sha512_init(&sha_ctx);
         sha512_update(&sha_ctx, key, key_len);
@@ -35,17 +34,17 @@ __device__ void hmac_sha512_init(HMAC_CTX* ctx, const BYTE* key, size_t key_len)
     }
 
     // Prepara ipad e opad
-    for (int i = 0; i < HMAC_BLOCK_SIZE; i++) {
+    for (int i = 0; i < SHA512_BLOCK_SIZE; i++) {
         ctx->ipad[i] = 0x36 ^ k[i];
         ctx->opad[i] = 0x5C ^ k[i];
     }
     
     // Pré-computa os hashes iniciais do ipad e opad
     sha512_init(&ctx->inner);
-    sha512_update(&ctx->inner, ctx->ipad, HMAC_BLOCK_SIZE);
+    sha512_update(&ctx->inner, ctx->ipad, SHA512_BLOCK_SIZE);
     
     sha512_init(&ctx->outer);
-    sha512_update(&ctx->outer, ctx->opad, HMAC_BLOCK_SIZE);
+    sha512_update(&ctx->outer, ctx->opad, SHA512_BLOCK_SIZE);
 }
 
 __device__ void hmac_sha512_update(HMAC_CTX* ctx, const BYTE* data, size_t len) {
@@ -114,4 +113,3 @@ __global__ void pbkdf2_kernel(
     hmac_sha512_init(&hmac_ctx, (const BYTE*)mnemonic, mnemonic_len);
     F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, 1, output);
 }
-
