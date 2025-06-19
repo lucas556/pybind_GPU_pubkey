@@ -5,51 +5,6 @@
 
 #define SHA512_DIGEST_SIZE 64
 #define HMAC_BLOCK_SIZE 128
-/*
-__global__ void hmac_sha512_kernel(const char* key, size_t key_len, const BYTE* data, size_t data_len, BYTE* output) {
-
-    // Alinhar buffers para melhor performance e consistência
-    __align__(16) BYTE k[BLOCK_SIZE] = {0};
-    __align__(16) BYTE k_ipad[BLOCK_SIZE];
-    __align__(16) BYTE k_opad[BLOCK_SIZE];
-    __align__(16) BYTE inner_hash[SHA512_DIGEST_SIZE];
-    __align__(16) BYTE initial_output[SHA512_DIGEST_SIZE]; 
-
-    // Processar a chave
-    if (key_len > BLOCK_SIZE) {
-        SHA512_CTX ctx;
-        sha512_init(&ctx);
-        sha512_update(&ctx, (const BYTE*)key, key_len);
-        sha512_final(&ctx, k);
-        key_len = SHA512_DIGEST_SIZE;
-    } else {
-        memcpy(k, key, key_len);
-        // Preencher o resto com zeros (já está zerado pela inicialização)
-    }
-
-    // Criar k_ipad e k_opad com o bloco inteiro
-    for (int i = 0; i < BLOCK_SIZE; i++) {
-        k_ipad[i] = k[i] ^ 0x36;
-        k_opad[i] = k[i] ^ 0x5c;
-    }
-
-    // Hash interno
-    SHA512_CTX ctx_in;
-    sha512_init(&ctx_in);
-    sha512_update(&ctx_in, k_ipad, BLOCK_SIZE);  // Usar bloco inteiro
-    sha512_update(&ctx_in, data, data_len);
-    sha512_final(&ctx_in, inner_hash);
-
-    // Hash externo
-    SHA512_CTX ctx_out;
-    sha512_init(&ctx_out);
-    sha512_update(&ctx_out, k_opad, BLOCK_SIZE);  // Usar bloco inteiro
-    sha512_update(&ctx_out, inner_hash, SHA512_DIGEST_SIZE);
-    sha512_final(&ctx_out, output);
-    memcpy(initial_output, output, SHA512_DIGEST_SIZE);
-
-}
-*/
 
 __global__ void hmac_sha512_kernel(
     const BYTE* const* keys, const size_t* key_lens,
@@ -98,54 +53,7 @@ __global__ void hmac_sha512_kernel(
     sha512_final(&ctx_out, out);
 }
 
-__global__ void hmac_sha512_kernel_batch(
-    const BYTE* const* keys, const size_t* key_lens,
-    const BYTE* const* datas, const size_t* data_lens,
-    BYTE* outputs, int count
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= count) return;
-
-    const BYTE* key = keys[idx];
-    size_t key_len = key_lens[idx];
-    const BYTE* data = datas[idx];
-    size_t data_len = data_lens[idx];
-    BYTE* out = outputs + idx * SHA512_DIGEST_SIZE;
-
-    BYTE k[HMAC_BLOCK_SIZE] = {0};
-    BYTE k_ipad[HMAC_BLOCK_SIZE];
-    BYTE k_opad[HMAC_BLOCK_SIZE];
-    BYTE inner_hash[SHA512_DIGEST_SIZE];
-
-    if (key_len > HMAC_BLOCK_SIZE) {
-        SHA512_CTX ctx;
-        sha512_init(&ctx);
-        sha512_update(&ctx, key, key_len);
-        sha512_final(&ctx, k);
-        key_len = SHA512_DIGEST_SIZE;
-    } else {
-        memcpy(k, key, key_len);
-    }
-
-    for (int i = 0; i < HMAC_BLOCK_SIZE; i++) {
-        k_ipad[i] = k[i] ^ 0x36;
-        k_opad[i] = k[i] ^ 0x5c;
-    }
-
-    SHA512_CTX ctx_in;
-    sha512_init(&ctx_in);
-    sha512_update(&ctx_in, k_ipad, HMAC_BLOCK_SIZE);
-    sha512_update(&ctx_in, data, data_len);
-    sha512_final(&ctx_in, inner_hash);
-
-    SHA512_CTX ctx_out;
-    sha512_init(&ctx_out);
-    sha512_update(&ctx_out, k_opad, HMAC_BLOCK_SIZE);
-    sha512_update(&ctx_out, inner_hash, SHA512_DIGEST_SIZE);
-    sha512_final(&ctx_out, out);
-}
-
-__host__ void hmac_sha512_data_batch(
+__host__ void hmac_sha512_batch(
     const std::vector<std::string>& keys,
     const std::vector<ByteVec>& datas,
     std::vector<ByteVec>& outputs,
@@ -188,7 +96,7 @@ __host__ void hmac_sha512_data_batch(
     CudaSafeCall(cudaMemcpy(d_data_lens, h_data_lens.data(), count * sizeof(size_t), cudaMemcpyHostToDevice));
 
     int blocks = (count + threads_per_block - 1) / threads_per_block;
-    hmac_sha512_kernel_batch<<<blocks, threads_per_block>>>(d_keys, d_key_lens, d_datas, d_data_lens, d_outputs, count);
+    hmac_sha512_kernel<<<blocks, threads_per_block>>>(d_keys, d_key_lens, d_datas, d_data_lens, d_outputs, count);
     CudaSafeCall(cudaDeviceSynchronize());
 
     for (int i = 0; i < count; ++i) {
@@ -209,6 +117,7 @@ __host__ void hmac_sha512_data_batch(
     cudaFree(d_data_lens);
     cudaFree(d_outputs);
 }
+
 
 
 #endif // GPU_HMAC_CUH
