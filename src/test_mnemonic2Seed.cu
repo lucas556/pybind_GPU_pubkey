@@ -16,6 +16,38 @@ __host__ void print_hex(const std::string& label, const std::vector<unsigned cha
     std::cout << std::endl;
 }
 
+__global__ void ckd_data_kernel_batch(
+    unsigned char** pubkeys_or_lefts,  // 注意：取消 const BYTE**
+    const uint8_t* hardened,
+    const uint32_t* indices,
+    BYTE* datas,
+    int count
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+
+    int offset = idx * (33 + 4);
+    const BYTE* input = pubkeys_or_lefts[idx];
+    BYTE* out = datas + offset;
+
+    int pos = 0;
+    if (hardened[idx]) {
+        out[pos++] = 0x00;
+        for (int i = 0; i < 32; ++i)
+            out[pos++] = input[i];
+    } else {
+        for (int i = 0; i < 33; ++i)
+            out[pos++] = input[i];
+    }
+
+    uint32_t index = indices[idx];
+    out[pos++] = (index >> 24) & 0xFF;
+    out[pos++] = (index >> 16) & 0xFF;
+    out[pos++] = (index >> 8) & 0xFF;
+    out[pos++] = index & 0xFF;
+}
+
+
 __host__ std::vector<unsigned char> derive_pubkey(const std::vector<unsigned char>& privkey, bool compressed = true) {
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     if (!ctx || privkey.size() != 32 || !secp256k1_ec_seckey_verify(ctx, privkey.data()))
