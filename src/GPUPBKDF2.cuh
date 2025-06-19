@@ -113,3 +113,5 @@ __global__ void pbkdf2_kernel(
     hmac_sha512_init(&hmac_ctx, (const BYTE*)mnemonic, mnemonic_len);
     F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, 1, output);
 }
+
+#endif
