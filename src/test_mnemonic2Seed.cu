@@ -18,7 +18,7 @@ __host__ void print_hex(const std::string& label, const std::vector<unsigned cha
     std::cout << std::endl;
 }
 
-__global__ void ckd_data_kernel_batch(
+__global__ void ckd_data_kernel(
     unsigned char** pubkeys_or_lefts,  // 注意：取消 const BYTE**
     const uint8_t* hardened,
     const uint32_t* indices,
@@ -199,7 +199,7 @@ __host__ void derive_keys_from_mnemonics(
 
         CudaSafeCall(cudaMalloc(&d_datas, count * MAX_CKD_DATA_SIZE));
         blocks = (count + threads_per_block - 1) / threads_per_block;
-        ckd_data_kernel_batch<<<blocks, threads_per_block>>>(d_inputs, d_hardened, d_indices, d_datas, count);
+        ckd_data_kernel<<<blocks, threads_per_block>>>(d_inputs, d_hardened, d_indices, d_datas, count);
         CudaSafeCall(cudaDeviceSynchronize());
 
         std::vector<std::vector<unsigned char>> prepared_data(count);
