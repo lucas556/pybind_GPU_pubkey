@@ -103,15 +103,39 @@ __global__ void pbkdf2_kernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= count) return;
 
-    const char* mnemonic = d_mnemonics[idx];
-    size_t mnemonic_len = d_mnemonic_lens[idx];
-    const char* salt = d_salts[idx];
+    const BYTE* password = (const BYTE*)d_mnemonics[idx];
+    size_t password_len = d_mnemonic_lens[idx];
+    const BYTE* salt = (const BYTE*)d_salts[idx];
     size_t salt_len = d_salt_lens[idx];
     BYTE* output = d_out_seeds + idx * SEED_SIZE;
 
+    // 直接复用 buffer，节省空间
+    BYTE u[SHA512_DIGEST_SIZE];
+    BYTE digest[SHA512_DIGEST_SIZE];
+
+    BYTE block_index_be[4] = {0, 0, 0, 1};
+
     HMAC_CTX hmac_ctx;
-    hmac_sha512_init(&hmac_ctx, (const BYTE*)mnemonic, mnemonic_len);
-    F(&hmac_ctx, (const BYTE*)salt, salt_len, iterations, 1, output);
+    hmac_sha512_init(&hmac_ctx, password, password_len);
+
+    HMAC_CTX ctx = hmac_ctx;
+    hmac_sha512_update(&ctx, salt, salt_len);
+    hmac_sha512_update(&ctx, block_index_be, 4);
+    hmac_sha512_final(&ctx, u);
+
+    memcpy(digest, u, SHA512_DIGEST_SIZE);
+
+    for (uint32_t i = 1; i < iterations; ++i) {
+        ctx = hmac_ctx;
+        hmac_sha512_update(&ctx, u, SHA512_DIGEST_SIZE);
+        hmac_sha512_final(&ctx, u);
+
+        for (int j = 0; j < SHA512_DIGEST_SIZE; ++j)
+            digest[j] ^= u[j];
+    }
+
+    memcpy(output, digest, SHA512_DIGEST_SIZE);
 }
+
 
 #endif
