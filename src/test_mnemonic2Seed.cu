@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <secp256k1.h>
+#include <iomanip>
 
 #include "GPUSHA512.cuh"
 #include "GPUPBKDF2.cuh"
@@ -11,43 +12,6 @@
 
 #define BITCOIN_SEED "Bitcoin seed"
 #define MAX_CKD_DATA_SIZE (1 + 32 + 4)
-
-__host__ void print_hex(const std::string& label, const std::vector<unsigned char>& data) {
-    std::cout << label;
-    for (uint8_t b : data) printf("%02x", b);
-    std::cout << std::endl;
-}
-
-__global__ void ckd_data_kernel(
-    unsigned char** pubkeys_or_lefts,  // 注意：取消 const BYTE**
-    const uint8_t* hardened,
-    const uint32_t* indices,
-    BYTE* datas,
-    int count
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= count) return;
-
-    int offset = idx * (33 + 4);
-    const BYTE* input = pubkeys_or_lefts[idx];
-    BYTE* out = datas + offset;
-
-    int pos = 0;
-    if (hardened[idx]) {
-        out[pos++] = 0x00;
-        for (int i = 0; i < 32; ++i)
-            out[pos++] = input[i];
-    } else {
-        for (int i = 0; i < 33; ++i)
-            out[pos++] = input[i];
-    }
-
-    uint32_t index = indices[idx];
-    out[pos++] = (index >> 24) & 0xFF;
-    out[pos++] = (index >> 16) & 0xFF;
-    out[pos++] = (index >> 8) & 0xFF;
-    out[pos++] = index & 0xFF;
-}
 
 
 __host__ std::vector<unsigned char> derive_pubkey(const std::vector<unsigned char>& privkey, bool compressed = true) {
@@ -69,47 +33,83 @@ __host__ std::vector<unsigned char> derive_pubkey(const std::vector<unsigned cha
     return output;
 }
 
+__global__ void ckd_data_kernel_batch(
+    unsigned char** pubkeys_or_lefts,
+    const uint8_t* hardened,
+    const uint32_t* indices,
+    BYTE* datas,
+    int count
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+
+    const BYTE* input = pubkeys_or_lefts[idx];
+    if (!input) return;
+
+    int offset = idx * MAX_CKD_DATA_SIZE;
+    BYTE* out = datas + offset;
+    int pos = 0;
+
+    if (hardened[idx]) {
+        out[pos++] = 0x00;
+        for (int i = 0; i < 32; ++i)
+            out[pos++] = input[i];
+    } else {
+        for (int i = 0; i < 33; ++i)
+            out[pos++] = input[i];
+    }
+
+    uint32_t index = indices[idx];
+    out[pos++] = (index >> 24) & 0xFF;
+    out[pos++] = (index >> 16) & 0xFF;
+    out[pos++] = (index >> 8) & 0xFF;
+    out[pos++] = index & 0xFF;
+} 
+
 __host__ std::vector<unsigned char> add_privkeys_mod_n(const std::vector<unsigned char>& a, const std::vector<unsigned char>& b) {
     std::vector<unsigned char> out = a;
+
+    if (a.size() != 32 || b.size() != 32)
+        throw std::runtime_error("Invalid key or tweak size");
+
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!secp256k1_ec_seckey_tweak_add(ctx, out.data(), b.data()))
+    if (!ctx)
+        throw std::runtime_error("Failed to create secp256k1 context");
+
+    if (!secp256k1_ec_seckey_verify(ctx, b.data())) {
+        secp256k1_context_destroy(ctx);
+        throw std::runtime_error("Tweak IL is not a valid scalar");
+    }
+
+    if (!secp256k1_ec_seckey_tweak_add(ctx, out.data(), b.data())) {
+        std::cerr << "[!] secp256k1_ec_seckey_tweak_add failed\n";
+        std::cerr << "  privkey: ";
+        for (unsigned char x : a) std::cerr << std::hex << std::setw(2) << std::setfill('0') << (int)x;
+        std::cerr << "\n  IL: ";
+        for (unsigned char x : b) std::cerr << std::hex << std::setw(2) << std::setfill('0') << (int)x;
+        std::cerr << std::endl;
+
+        secp256k1_context_destroy(ctx);
         throw std::runtime_error("secp256k1_ec_seckey_tweak_add failed");
+    }
+
     secp256k1_context_destroy(ctx);
     return out;
 }
 
-std::vector<uint32_t> parse_path(const std::string& path) {
-    std::vector<uint32_t> result;
-    if (path.empty() || path[0] != 'm') throw std::runtime_error("Invalid path");
-    size_t i = 2;
-    while (i < path.size()) {
-        size_t slash = path.find('/', i);
-        std::string token = path.substr(i, slash - i);
-        if (!token.empty()) {
-            if (token.back() == '\'')
-                result.push_back(0x80000000 + std::stoi(token.substr(0, token.size() - 1)));
-            else
-                result.push_back(std::stoi(token));
-        }
-        if (slash == std::string::npos) break;
-        i = slash + 1;
-    }
-    return result;
-}
-
-__host__ void derive_keys_from_mnemonics(
+__host__ void derive2pub(
     const std::vector<std::string>& mnemonics,
     const std::string& passphrase,
-    const std::string& path,
-    std::vector<std::vector<unsigned char>>& final_privkeys,
-    std::vector<std::vector<unsigned char>>& final_chaincodes,
-    int threads_per_block = 256
+    const std::vector<uint32_t>& path_indices,
+    std::vector<std::vector<unsigned char>>& final_pubkeys,
+    int threads_per_block
 ) {
     int count = mnemonics.size();
     initSHA512Constants();
 
     std::vector<std::string> salts(count);
-    for (int i = 0; i < count; ++i) salts[i] = "mnemonic" + passphrase;
+    for (int i = 0; i < count; ++i)
+        salts[i] = "mnemonic" + passphrase;
 
     std::vector<const char*> h_mnemonics(count), h_salts(count);
     std::vector<size_t> mnemonic_lens(count), salt_lens(count);
@@ -137,38 +137,55 @@ __host__ void derive_keys_from_mnemonics(
         CudaSafeCall(cudaMalloc(&d_salt_data[i], salt_lens[i]));
         CudaSafeCall(cudaMemcpy(d_salt_data[i], h_salts[i], salt_lens[i], cudaMemcpyHostToDevice));
     }
+
     CudaSafeCall(cudaMemcpy(d_mnemonics, d_mnemonic_data.data(), count * sizeof(char*), cudaMemcpyHostToDevice));
     CudaSafeCall(cudaMemcpy(d_salts, d_salt_data.data(), count * sizeof(char*), cudaMemcpyHostToDevice));
     CudaSafeCall(cudaMemcpy(d_mnemonic_lens, mnemonic_lens.data(), count * sizeof(size_t), cudaMemcpyHostToDevice));
     CudaSafeCall(cudaMemcpy(d_salt_lens, salt_lens.data(), count * sizeof(size_t), cudaMemcpyHostToDevice));
 
     int blocks = (count + threads_per_block - 1) / threads_per_block;
-    pbkdf2_kernel<<<blocks, threads_per_block>>>(d_mnemonics, d_mnemonic_lens, d_salts, d_salt_lens, PBKDF2_HMAC_SHA512_ITERATIONS, d_out_seeds, count);
-    CudaSafeCall(cudaDeviceSynchronize());
+    pbkdf2_kernel<<<blocks, threads_per_block>>>(
+        d_mnemonics, d_mnemonic_lens, d_salts, d_salt_lens,
+        PBKDF2_HMAC_SHA512_ITERATIONS, d_out_seeds, count);
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess)
+            std::cerr << "[!] pbkdf2_kernel launch failed: " << cudaGetErrorString(err) << std::endl;
+        CudaSafeCall(cudaDeviceSynchronize());
+    }
 
-    std::vector<std::vector<unsigned char>> privs(count), chains(count), seeds(count);
+    std::vector<std::vector<unsigned char>> seeds(count);
     for (int i = 0; i < count; ++i) {
         seeds[i].resize(SEED_SIZE);
         CudaSafeCall(cudaMemcpy(seeds[i].data(), d_out_seeds + i * SEED_SIZE, SEED_SIZE, cudaMemcpyDeviceToHost));
-    }
-
-    std::vector<std::string> keys(count, BITCOIN_SEED);
-    std::vector<std::vector<unsigned char>> outputs;
-    hmac_sha512_batch(keys, seeds, outputs, threads_per_block);
-    for (int i = 0; i < count; ++i) {
-        privs[i] = std::vector<unsigned char>(outputs[i].begin(), outputs[i].begin() + 32);
-        chains[i] = std::vector<unsigned char>(outputs[i].begin() + 32, outputs[i].end());
     }
 
     for (int i = 0; i < count; ++i) {
         cudaFree(d_mnemonic_data[i]);
         cudaFree(d_salt_data[i]);
     }
-    cudaFree(d_mnemonics); cudaFree(d_salts);
-    cudaFree(d_mnemonic_lens); cudaFree(d_salt_lens);
+    cudaFree(d_mnemonics);
+    cudaFree(d_salts);
+    cudaFree(d_mnemonic_lens);
+    cudaFree(d_salt_lens);
     cudaFree(d_out_seeds);
 
-    std::vector<uint32_t> path_indices = parse_path(path);
+    std::vector<std::vector<unsigned char>> privs(count), chains(count);
+    std::vector<std::string> keys(count, BITCOIN_SEED);
+    std::vector<std::vector<unsigned char>> outputs;
+    hmac_sha512_batch(keys, seeds, outputs, threads_per_block);  // 此处内部分也应有 kernel
+    {
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess)
+            std::cerr << "[!] hmac_sha512_batch failed: " << cudaGetErrorString(err) << std::endl;
+        CudaSafeCall(cudaDeviceSynchronize());
+    }
+
+    for (int i = 0; i < count; ++i) {
+        privs[i] = std::vector<unsigned char>(outputs[i].begin(), outputs[i].begin() + 32);
+        chains[i] = std::vector<unsigned char>(outputs[i].begin() + 32, outputs[i].end());
+    }
+
     for (uint32_t index : path_indices) {
         std::vector<std::vector<unsigned char>> input_data(count);
         std::vector<uint8_t> hardened_u8(count);
@@ -178,48 +195,45 @@ __host__ void derive_keys_from_mnemonics(
             input_data[i] = hardened ? privs[i] : derive_pubkey(privs[i], true);
         }
 
+        std::vector<BYTE*> d_input_data(count);
+        BYTE** d_inputs;
         uint8_t* d_hardened;
         uint32_t* d_indices;
         BYTE* d_datas;
-        CudaSafeCall(cudaMalloc(&d_hardened, count * sizeof(uint8_t)));
-        CudaSafeCall(cudaMalloc(&d_indices, count * sizeof(uint32_t)));
 
-        std::vector<uint32_t> indices(count, index);
-        CudaSafeCall(cudaMemcpy(d_hardened, hardened_u8.data(), count * sizeof(uint8_t), cudaMemcpyHostToDevice));
-        CudaSafeCall(cudaMemcpy(d_indices, indices.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice));
-
-        std::vector<BYTE*> d_input_data(count);
         for (int i = 0; i < count; ++i) {
             CudaSafeCall(cudaMalloc(&d_input_data[i], input_data[i].size()));
             CudaSafeCall(cudaMemcpy(d_input_data[i], input_data[i].data(), input_data[i].size(), cudaMemcpyHostToDevice));
         }
-        BYTE** d_inputs;
+
         CudaSafeCall(cudaMalloc(&d_inputs, count * sizeof(BYTE*)));
         CudaSafeCall(cudaMemcpy(d_inputs, d_input_data.data(), count * sizeof(BYTE*), cudaMemcpyHostToDevice));
 
+        CudaSafeCall(cudaMalloc(&d_hardened, count * sizeof(uint8_t)));
+        CudaSafeCall(cudaMalloc(&d_indices, count * sizeof(uint32_t)));
+        std::vector<uint32_t> indices(count, index);
+        CudaSafeCall(cudaMemcpy(d_hardened, hardened_u8.data(), count * sizeof(uint8_t), cudaMemcpyHostToDevice));
+        CudaSafeCall(cudaMemcpy(d_indices, indices.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice));
+
         CudaSafeCall(cudaMalloc(&d_datas, count * MAX_CKD_DATA_SIZE));
         blocks = (count + threads_per_block - 1) / threads_per_block;
-        ckd_data_kernel<<<blocks, threads_per_block>>>(d_inputs, d_hardened, d_indices, d_datas, count);
-        CudaSafeCall(cudaDeviceSynchronize());
+        ckd_data_kernel_batch<<<blocks, threads_per_block>>>(
+            d_inputs, d_hardened, d_indices, d_datas, count);
+        {
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess)
+                std::cerr << "[!] ckd_data_kernel_batch launch failed: " << cudaGetErrorString(err) << std::endl;
+            CudaSafeCall(cudaDeviceSynchronize());
+        }
 
         std::vector<std::vector<unsigned char>> prepared_data(count);
         for (int i = 0; i < count; ++i) {
             prepared_data[i].resize(hardened_u8[i] ? 1 + 32 + 4 : 33 + 4);
-            CudaSafeCall(cudaMemcpy(prepared_data[i].data(), d_datas + i * MAX_CKD_DATA_SIZE, prepared_data[i].size(), cudaMemcpyDeviceToHost));
-        }
-
-        std::vector<std::string> key_strs(count);
-        for (int i = 0; i < count; ++i)
-            key_strs[i] = std::string(reinterpret_cast<const char*>(chains[i].data()), chains[i].size());
-
-        std::vector<std::vector<unsigned char>> out_hmac;
-        hmac_sha512_batch(key_strs, prepared_data, out_hmac, threads_per_block);
-
-        for (int i = 0; i < count; ++i) {
-            std::vector<unsigned char> IL(out_hmac[i].begin(), out_hmac[i].begin() + 32);
-            std::vector<unsigned char> IR(out_hmac[i].begin() + 32, out_hmac[i].end());
-            privs[i] = add_privkeys_mod_n(privs[i], IL);
-            chains[i] = IR;
+            CudaSafeCall(cudaMemcpy(
+                prepared_data[i].data(),
+                d_datas + i * MAX_CKD_DATA_SIZE,
+                prepared_data[i].size(),
+                cudaMemcpyDeviceToHost));
         }
 
         for (int i = 0; i < count; ++i)
@@ -228,26 +242,76 @@ __host__ void derive_keys_from_mnemonics(
         cudaFree(d_hardened);
         cudaFree(d_indices);
         cudaFree(d_datas);
+
+        std::vector<std::string> key_strs(count);
+        for (int i = 0; i < count; ++i)
+            key_strs[i] = std::string(reinterpret_cast<const char*>(chains[i].data()), chains[i].size());
+
+        std::vector<std::vector<unsigned char>> out_hmac;
+        hmac_sha512_batch(key_strs, prepared_data, out_hmac, threads_per_block);
+        {
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess)
+                std::cerr << "[!] hmac_sha512_batch (CKD) failed: " << cudaGetErrorString(err) << std::endl;
+            CudaSafeCall(cudaDeviceSynchronize());
+        }
+
+        for (int i = 0; i < count; ++i) {
+            std::vector<unsigned char> IL(out_hmac[i].begin(), out_hmac[i].begin() + 32);
+            std::vector<unsigned char> IR(out_hmac[i].begin() + 32, out_hmac[i].end());
+
+            secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+            if (!secp256k1_ec_seckey_verify(ctx, IL.data())) {
+                privs[i].clear();  // 无效 IL
+                secp256k1_context_destroy(ctx);
+                continue;
+            }
+            secp256k1_context_destroy(ctx);
+
+            privs[i] = add_privkeys_mod_n(privs[i], IL);
+            chains[i] = IR;
+        }
     }
 
-    final_privkeys = privs;
-    final_chaincodes = chains;
+    final_pubkeys.clear();
+    for (int i = 0; i < count; ++i) {
+        if (!privs[i].empty())
+            final_pubkeys.emplace_back(derive_pubkey(privs[i], false));  // 非压缩公钥
+    }
 }
 
-int main() {
-    std::string mnemonic = "aware report movie exile buyer drum poverty supreme gym oppose float elegant";
-    std::string passphrase = "";
-    std::string path = "m/44'/195'/0'/0/0";
 
-    std::vector<std::vector<unsigned char>> privs, chains;
+int main() {
+    std::vector<std::string> mnemonics = {
+        "aware report movie exile buyer drum poverty supreme gym oppose float elegant",
+        "shock mosquito dizzy upper sniff mother promote peanut month then coin trade"
+    };
+
+    std::string passphrase = "";
+
+    std::vector<uint32_t> path = {
+        44 | 0x80000000,
+        195 | 0x80000000,
+        0 | 0x80000000,
+        0,
+        0
+    };
+
+    std::vector<std::vector<unsigned char>> pubkeys;
+
     try {
-        derive_keys_from_mnemonics({mnemonic}, passphrase, path, privs, chains, 256);
-        print_hex("[✓] Final Private Key : ", privs[0]);
-        print_hex("[✓] Final Chain Code  : ", chains[0]);
-        print_hex("[✓] Final Public Key  : ", derive_pubkey(privs[0], false));
+        derive2pub(mnemonics, passphrase, path, pubkeys, 256);
+
+        for (const auto& pub : pubkeys) {
+            for (unsigned char b : pub)
+                std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)b;
+            std::cout << '\n';
+        }
+
     } catch (const std::exception& e) {
         std::cerr << "[!] Error: " << e.what() << std::endl;
         return 1;
     }
+
     return 0;
 }
