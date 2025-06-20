@@ -71,61 +71,77 @@ __host__ void hmac_sha512_batch(
     outputs.resize(count);
 
     std::vector<const BYTE*> h_keys(count);
-    std::vector<size_t> h_key_lens(count);
     std::vector<const BYTE*> h_datas(count);
-    std::vector<size_t> h_data_lens(count);
+    std::vector<size_t> h_key_lens(count), h_data_lens(count);
 
-    BYTE** d_keys;
-    BYTE** d_datas;
-    size_t *d_key_lens, *d_data_lens;
-    BYTE* d_outputs;
+    BYTE** d_keys = nullptr;
+    BYTE** d_datas = nullptr;
+    size_t* d_key_lens = nullptr;
+    size_t* d_data_lens = nullptr;
+    BYTE* d_outputs = nullptr;
 
-    CudaSafeCall(cudaMalloc(&d_keys, count * sizeof(BYTE*)));
-    CudaSafeCall(cudaMalloc(&d_datas, count * sizeof(BYTE*)));
-    CudaSafeCall(cudaMalloc(&d_key_lens, count * sizeof(size_t)));
-    CudaSafeCall(cudaMalloc(&d_data_lens, count * sizeof(size_t)));
-    CudaSafeCall(cudaMalloc(&d_outputs, count * SHA512_DIGEST_SIZE));
+    std::vector<BYTE*> d_key_ptrs(count);
+    std::vector<BYTE*> d_data_ptrs(count);
 
-    BYTE** d_key_ptrs = new BYTE*[count];
-    BYTE** d_data_ptrs = new BYTE*[count];
+    // === 分配 key/data 到 device ===
     for (int i = 0; i < count; ++i) {
         h_key_lens[i] = keys[i].size();
         h_data_lens[i] = datas[i].size();
 
+        // 每个 key
         CudaSafeCall(cudaMalloc(&d_key_ptrs[i], h_key_lens[i]));
         CudaSafeCall(cudaMemcpy(d_key_ptrs[i], keys[i].data(), h_key_lens[i], cudaMemcpyHostToDevice));
 
+        // 每个 data
         CudaSafeCall(cudaMalloc(&d_data_ptrs[i], h_data_lens[i]));
         CudaSafeCall(cudaMemcpy(d_data_ptrs[i], datas[i].data(), h_data_lens[i], cudaMemcpyHostToDevice));
     }
-    CudaSafeCall(cudaMemcpy(d_keys, d_key_ptrs, count * sizeof(BYTE*), cudaMemcpyHostToDevice));
-    CudaSafeCall(cudaMemcpy(d_datas, d_data_ptrs, count * sizeof(BYTE*), cudaMemcpyHostToDevice));
+
+    // === 分配设备指针数组 ===
+    CudaSafeCall(cudaMalloc(&d_keys, count * sizeof(BYTE*)));
+    CudaSafeCall(cudaMalloc(&d_datas, count * sizeof(BYTE*)));
+    CudaSafeCall(cudaMemcpy(d_keys, d_key_ptrs.data(), count * sizeof(BYTE*), cudaMemcpyHostToDevice));
+    CudaSafeCall(cudaMemcpy(d_datas, d_data_ptrs.data(), count * sizeof(BYTE*), cudaMemcpyHostToDevice));
+
+    // === 拷贝长度数组 ===
+    CudaSafeCall(cudaMalloc(&d_key_lens, count * sizeof(size_t)));
+    CudaSafeCall(cudaMalloc(&d_data_lens, count * sizeof(size_t)));
     CudaSafeCall(cudaMemcpy(d_key_lens, h_key_lens.data(), count * sizeof(size_t), cudaMemcpyHostToDevice));
     CudaSafeCall(cudaMemcpy(d_data_lens, h_data_lens.data(), count * sizeof(size_t), cudaMemcpyHostToDevice));
 
+    // === 分配输出 buffer ===
+    CudaSafeCall(cudaMalloc(&d_outputs, count * SHA512_DIGEST_SIZE));
+
+    // === 启动 kernel ===
     int blocks = (count + threads_per_block - 1) / threads_per_block;
-    hmac_sha512_kernel<<<blocks, threads_per_block>>>(d_keys, d_key_lens, d_datas, d_data_lens, d_outputs, count);
+    hmac_sha512_kernel<<<blocks, threads_per_block>>>(
+        d_keys, d_key_lens,
+        d_datas, d_data_lens,
+        d_outputs, count
+    );
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+        std::cerr << "[!] hmac_sha512_kernel launch failed: " << cudaGetErrorString(err) << std::endl;
     CudaSafeCall(cudaDeviceSynchronize());
 
+    // === 回传结果 ===
     for (int i = 0; i < count; ++i) {
         outputs[i].resize(SHA512_DIGEST_SIZE);
         CudaSafeCall(cudaMemcpy(outputs[i].data(), d_outputs + i * SHA512_DIGEST_SIZE, SHA512_DIGEST_SIZE, cudaMemcpyDeviceToHost));
     }
 
+    // === 释放内存 ===
     for (int i = 0; i < count; ++i) {
         cudaFree(d_key_ptrs[i]);
         cudaFree(d_data_ptrs[i]);
     }
-    delete[] d_key_ptrs;
-    delete[] d_data_ptrs;
-
     cudaFree(d_keys);
     cudaFree(d_datas);
     cudaFree(d_key_lens);
     cudaFree(d_data_lens);
     cudaFree(d_outputs);
 }
-
 
 
 #endif // GPU_HMAC_CUH
