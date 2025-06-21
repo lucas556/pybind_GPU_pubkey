@@ -1,4 +1,3 @@
-// optimized_derive2pub.cu (cleaned)
 #include <iostream>
 #include <vector>
 #include <string>
@@ -14,8 +13,7 @@
 
 namespace py = pybind11;
 
-#define BITCOIN_SEED "Bitcoin seed"
-
+constexpr const char* BITCOIN_SEED = "Bitcoin seed";
 using ByteVec = std::vector<uint8_t>;
 
 __host__ std::vector<unsigned char> derive_pubkey(const std::vector<unsigned char>& privkey, secp256k1_context* ctx, bool compressed = true) {
@@ -79,9 +77,9 @@ __host__ void gpu_pbkdf2_batch(const std::vector<std::string>& mnemonics, const 
     CudaSafeCall(cudaMemcpy(d_salt_lens, salt_lens.data(), count * sizeof(size_t), cudaMemcpyHostToDevice));
 
     int blocks = (count + threads_per_block - 1) / threads_per_block;
-    pbkdf2_kernel<<<blocks, threads_per_block>>>(
-        d_mnemonics, d_mnemonic_lens, d_salts, d_salt_lens,
+    pbkdf2_kernel<<<blocks, threads_per_block>>>(d_mnemonics, d_mnemonic_lens, d_salts, d_salt_lens,
         PBKDF2_HMAC_SHA512_ITERATIONS, d_out_seeds, count);
+    CudaSafeCall(cudaGetLastError());
     CudaSafeCall(cudaDeviceSynchronize());
 
     out_seeds.resize(count);
@@ -108,32 +106,36 @@ std::vector<std::vector<unsigned char>> py_derive_pubkeys(
     int threads_per_block = 256
 ) {
     initSHA512Constants();
-    std::vector<ByteVec> seeds;
-    gpu_pbkdf2_batch(mnemonics, passphrase, seeds, threads_per_block);
+    std::vector<ByteVec> pbkdf2_seeds;
+    gpu_pbkdf2_batch(mnemonics, passphrase, pbkdf2_seeds, threads_per_block);
 
     int count = mnemonics.size();
     std::vector<std::vector<unsigned char>> privs(count), chains(count);
-    std::vector<std::string> keys(count, BITCOIN_SEED);
-    std::vector<ByteVec> outputs;
-    hmac_sha512_batch(keys, seeds, outputs, threads_per_block);
+    std::vector<std::string> master_key_labels(count, BITCOIN_SEED);
+    std::vector<ByteVec> master_hmacs;
+    hmac_sha512_batch(master_key_labels, pbkdf2_seeds, master_hmacs, threads_per_block);
 
     for (int i = 0; i < count; ++i) {
-        privs[i].assign(outputs[i].begin(), outputs[i].begin() + 32);
-        chains[i].assign(outputs[i].begin() + 32, outputs[i].end());
+        privs[i].assign(master_hmacs[i].begin(), master_hmacs[i].begin() + 32);
+        chains[i].assign(master_hmacs[i].begin() + 32, master_hmacs[i].end());
     }
 
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+    static secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+    if (!ctx) throw std::runtime_error("Failed to create secp256k1 context");
+
     for (uint32_t index : path_indices) {
         std::vector<ByteVec> input_data(count);
         std::vector<uint8_t> hardened(count);
+
         for (int i = 0; i < count; ++i) {
+            if (privs[i].empty()) continue;
             hardened[i] = index >= 0x80000000;
             input_data[i] = hardened[i] ? privs[i] : derive_pubkey(privs[i], ctx, true);
         }
 
         std::vector<ByteVec> prepared(count);
         for (int i = 0; i < count; ++i) {
-            prepared[i].clear();
+            if (privs[i].empty()) continue;
             if (hardened[i]) prepared[i].push_back(0x00);
             prepared[i].insert(prepared[i].end(), input_data[i].begin(), input_data[i].end());
             prepared[i].push_back((index >> 24) & 0xFF);
@@ -144,12 +146,15 @@ std::vector<std::vector<unsigned char>> py_derive_pubkeys(
 
         std::vector<std::string> key_strs(count);
         for (int i = 0; i < count; ++i)
-            key_strs[i] = std::string(reinterpret_cast<const char*>(chains[i].data()), chains[i].size());
+            if (!privs[i].empty())
+                key_strs[i].assign(chains[i].begin(), chains[i].end());
 
         std::vector<ByteVec> out_hmac;
         hmac_sha512_batch(key_strs, prepared, out_hmac, threads_per_block);
 
         for (int i = 0; i < count; ++i) {
+            if (privs[i].empty()) continue;
+
             std::vector<unsigned char> IL(out_hmac[i].begin(), out_hmac[i].begin() + 32);
             std::vector<unsigned char> IR(out_hmac[i].begin() + 32, out_hmac[i].end());
 
@@ -162,15 +167,13 @@ std::vector<std::vector<unsigned char>> py_derive_pubkeys(
             chains[i] = IR;
         }
     }
-    secp256k1_context_destroy(ctx);
 
     std::vector<std::vector<unsigned char>> final_pubkeys;
-    secp256k1_context* ctx_final = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     for (const auto& priv : privs) {
-        if (!priv.empty())
-            final_pubkeys.push_back(derive_pubkey(priv, ctx_final, false));
+        if (!priv.empty()) {
+            final_pubkeys.push_back(derive_pubkey(priv, ctx, false));
+        }
     }
-    secp256k1_context_destroy(ctx_final);
 
     return final_pubkeys;
 }
