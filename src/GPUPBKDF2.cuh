@@ -98,7 +98,6 @@ __global__ void pbkdf2_kernel(
     HMAC_CTX hmac_ctx;
     hmac_sha512_init(&hmac_ctx, password, password_len);
 
-    // 单块 F 多块为 for (uint32_t i = 1; i <= Nblocks; ++i)
     F(&hmac_ctx, salt, salt_len, iterations, 1, output);
 }
 
