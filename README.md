@@ -1,6 +1,9 @@
 
 ### 代码说明
 ```
+secp256k1 使用libsecp256k1 : https://github.com/bitcoin-core/secp256k1
+助记词验证使用的hashlib.sha256
+
 1. 可在MnemonicValidator选择助记词的数量
 2. progress_checkpoint.txt储存的是batch_id,当batch_size_cpu发生变化或者修改,这里需要修改
 3. threads_per_block = 256 这里使用的是3080的显卡,增大会爆内存
