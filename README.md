@@ -11,7 +11,7 @@ secp256k1 使用libsecp256k1 : https://github.com/bitcoin-core/secp256k1
 5. sub_batch_size 每线程处理的数量
 6. pool = Pool(cpu_count() * 2) 进程数量
 7. samples_logged.txt 为随机选择的助记词和公钥 方便测试 可删除
-8. 单核100% 不用每 batch都写入日志
+
 ```
 
 ### 使用方法
