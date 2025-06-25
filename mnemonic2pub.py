@@ -5,8 +5,41 @@ import random
 import os
 from multiprocessing import Pool, cpu_count, shared_memory
 import pybind_derive2pub
-import nayuki_crypto
 import sys
+import numpy as np
+from numba import njit
+import hashlib
+
+
+@njit
+def indices_to_entropy(indices, checksum_len):
+    bit_array = np.zeros(len(indices) * 11, dtype=np.uint8)
+    for i in range(len(indices)):
+        val = indices[i]
+        for j in range(11):
+            bit_array[i * 11 + j] = (val >> (10 - j)) & 1
+
+    entropy_len = len(bit_array) - checksum_len
+    entropy = np.zeros(entropy_len // 8, dtype=np.uint8)
+    for i in range(0, entropy_len, 8):
+        byte = 0
+        for j in range(8):
+            byte = (byte << 1) | bit_array[i + j]
+        entropy[i // 8] = byte
+    return entropy
+
+
+@njit
+def batch_match(pubkeys_array, target_bytes):
+    for i in range(pubkeys_array.shape[0]):
+        match = True
+        for j in range(len(target_bytes)):
+            if pubkeys_array[i, j] != target_bytes[j]:
+                match = False
+                break
+        if match:
+            return i
+    return -1
 
 
 class MnemonicValidator:
@@ -29,15 +62,15 @@ class MnemonicValidator:
             indices = [self.index_map[w] for w in words]
         except KeyError:
             return False
-        bit_str = ''.join(f"{index:011b}" for index in indices)
-        entropy_length = len(bit_str) - len(bit_str) // 33
-        entropy_bits = bit_str[:entropy_length]
-        checksum_bits = bit_str[entropy_length:]
-        entropy_bytes = int(entropy_bits, 2).to_bytes(entropy_length // 8, byteorder="big")
-        hash_bytes = nayuki_crypto.sha256(entropy_bytes)
+        bit_len = len(indices) * 11
+        checksum_len = bit_len // 33
+        entropy = indices_to_entropy(np.array(indices), checksum_len)
+        hash_bytes = hashlib.sha256(entropy).digest()
         hash_bits = bin(int.from_bytes(hash_bytes, "big"))[2:].zfill(256)
-        expected_checksum = hash_bits[:len(checksum_bits)]
-        return checksum_bits == expected_checksum
+        expected_checksum = hash_bits[:checksum_len]
+        bit_array = ''.join(f"{i:011b}" for i in indices)
+        actual_checksum = bit_array[-checksum_len:]
+        return actual_checksum == expected_checksum
 
 
 logging.basicConfig(
@@ -47,18 +80,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 custom_words = """
-fire cigar ......
+fire cigar embark nephew trophy question bottom umbrella tomorrow oak sock ski safe crane glimpse same
+draft outer slide penalty attack march hard unable between join other life index divert refuse endless awkward wine select
 """.split()
 
 path_indices = [44 | 0x80000000, 195 | 0x80000000, 0 | 0x80000000, 0, 0]
 passphrase = ""
 threads_per_block = 256
 batch_size_gpu = 20000
-batch_size_cpu = 100000
+batch_size_cpu = 240000
+sub_batch_size = 30000
 
 checkpoint_path = "progress_checkpoint.txt"
-target_pubkey_hex = "04......"  # add "04"
-target_pubkey_bytes = bytes.fromhex(target_pubkey_hex)
+target_pubkey_hex = "04647192caf03f0475036c4f6c83c8a5b6824ef4241a48827b5e3a65196e0a74862566fc99a738eee34a923194824564c0c7043e0cc07c1e105ab6203f11188b52"
+target_pubkey_bytes = np.frombuffer(bytes.fromhex(target_pubkey_hex), dtype=np.uint8)
 
 
 def validate_batch(batch):
@@ -87,7 +122,6 @@ def main():
     logger.info("Generating all 12-word combinations...")
     all_combinations = itertools.combinations(custom_words, 12)
 
-    # 恢复进度
     if os.path.exists(checkpoint_path):
         with open(checkpoint_path, "r") as f:
             start_batch_id = int(f.read().strip())
@@ -101,10 +135,12 @@ def main():
     batch_id = start_batch_id
     total_pubkeys = 0
 
-    with open("matched_mnemonics.txt", "w", encoding="utf-8") as fout:
+    with open("matched_mnemonics.txt", "w", encoding="utf-8") as fout, \
+         open("samples_logged.txt", "w", encoding="utf-8") as sample_log:
         for batch in batched(all_combinations, batch_size_cpu):
             start = time.time()
-            results = pool.map(validate_batch, [batch])
+            sub_batches = [batch[i:i+sub_batch_size] for i in range(0, len(batch), sub_batch_size)]
+            results = pool.map(validate_batch, sub_batches)
             valid_batch = [m for group in results for m in group]
             logger.info(f"[CPU] Batch {batch_id}: validated {len(batch)} → {len(valid_batch)} valid in {time.time() - start:.2f}s")
 
@@ -118,19 +154,24 @@ def main():
                 )
                 logger.info(f"[GPU] Derived {len(pubkeys)} pubkeys in {time.time() - start_gpu:.2f}s")
 
-                sample_idx = random.randint(0, len(valid_batch) - 1)
-                logger.info(f"[Sample] {valid_batch[sample_idx]} → {bytes(pubkeys[sample_idx]).hex()}")
+                pubkeys = [bytes(p) for p in pubkeys]
+                pubkey_matrix = np.array([np.frombuffer(p, dtype=np.uint8) for p in pubkeys])
+                matched_idx = batch_match(pubkey_matrix, target_pubkey_bytes)
+                if matched_idx != -1:
+                    matched_mnemonic = valid_batch[matched_idx]
+                    logger.info(f"[✓] MATCH FOUND! {matched_mnemonic} → {target_pubkey_hex}")
+                    fout.write(matched_mnemonic + "\n")
+                    fout.flush()
+                    pool.terminate()
+                    pool.join()
+                    shm.close()
+                    shm.unlink()
+                    sys.exit(0)
 
-                for mnemonic, pubkey in zip(valid_batch, pubkeys):
-                    if bytes(pubkey) == target_pubkey_bytes:
-                        logger.info(f"[✓] MATCH FOUND! {mnemonic} → {target_pubkey_hex}")
-                        fout.write(mnemonic + "\n")
-                        fout.flush()
-                        pool.terminate()
-                        pool.join()
-                        shm.close()
-                        shm.unlink()
-                        sys.exit(0)
+                if batch_id % 20 == 0:
+                    idx = random.randint(0, len(valid_batch) - 1)
+                    sample_log.write(f"{valid_batch[idx]} → {pubkeys[idx].hex()}\n")
+                    sample_log.flush()
 
                 total_pubkeys += len(pubkeys)
 
