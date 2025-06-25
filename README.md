@@ -10,6 +10,15 @@ nvcc -Xcompiler -fPIC -shared -std=c++17   -gencode arch=compute_75,code=sm_75  
 ```
 nvcc -Xcompiler -fPIC -shared -std=c++17   -O3 -Xptxas -v -maxrregcount=32   -gencode arch=compute_75,code=sm_75   -gencode arch=compute_86,code=sm_86   -gencode arch=compute_89,code=sm_89   -gencode arch=compute_90,code=sm_90   pybind_mnemonic2pub.cu -o pybind_derive2pub.so   -I/usr/include/python3.10 -I/usr/include/pybind11   -lsecp256k1
 ```
+
+### 使用方法
+```
+1. 修改target_pubkey_hex为需要的公钥,其中使用链上提取出的公钥前面加 '04'
+2. 编辑词表组合 编辑已知的助记词
+3. 运行程序
+nohup python3 mnemonic2pub.py > run.log 2>&1 &
+```
+
 ### python 中使用
 ```
 import pybind_derive2pub
