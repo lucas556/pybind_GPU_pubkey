@@ -9,7 +9,7 @@ import sys
 import numpy as np
 from numba import njit
 import hashlib
-import threading
+
 
 @njit
 def indices_to_entropy(indices, checksum_len):
@@ -28,6 +28,7 @@ def indices_to_entropy(indices, checksum_len):
         entropy[i // 8] = byte
     return entropy
 
+
 @njit
 def batch_match(pubkeys_array, target_bytes):
     for i in range(pubkeys_array.shape[0]):
@@ -39,6 +40,7 @@ def batch_match(pubkeys_array, target_bytes):
         if match:
             return i
     return -1
+
 
 class MnemonicValidator:
     wordlist = None
@@ -70,6 +72,7 @@ class MnemonicValidator:
         actual_checksum = bit_array[-checksum_len:]
         return actual_checksum == expected_checksum
 
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -92,13 +95,6 @@ checkpoint_path = "progress_checkpoint.txt"
 target_pubkey_hex = "04647192caf03f0475036c4f6c83c8a5b6824ef4241a48827b5e3a65196e0a74862566fc99a738eee34a923194824564c0c7043e0cc07c1e105ab6203f11188b52"
 target_pubkey_bytes = np.frombuffer(bytes.fromhex(target_pubkey_hex), dtype=np.uint8)
 
-latest_log_info = {'batch_id': -1, 'valid_count': 0, 'derived_count': 0}
-
-def async_logger():
-    while True:
-        time.sleep(10)
-        if latest_log_info['batch_id'] >= 0:
-            logger.info(f"[STAT] Batch {latest_log_info['batch_id']} → valid: {latest_log_info['valid_count']} | derived: {latest_log_info['derived_count']}")
 
 def validate_batch(batch):
     shm = shared_memory.SharedMemory(name="wordlist_shm")
@@ -106,12 +102,14 @@ def validate_batch(batch):
     validator = MnemonicValidator(wordlist_data=wordlist_data)
     return [' '.join(words) for words in batch if validator.is_valid(' '.join(words))]
 
+
 def batched(it, size):
     while True:
         chunk = list(itertools.islice(it, size))
         if not chunk:
             break
         yield chunk
+
 
 def main():
     logger.info("Loading wordlist and preparing shared memory...")
@@ -134,7 +132,6 @@ def main():
 
     logger.info("Validating mnemonics and deriving pubkeys on-the-fly...")
     pool = Pool(cpu_count() * 2)
-    threading.Thread(target=async_logger, daemon=True).start()
     batch_id = start_batch_id
     total_pubkeys = 0
 
@@ -145,7 +142,7 @@ def main():
             sub_batches = [batch[i:i+sub_batch_size] for i in range(0, len(batch), sub_batch_size)]
             results = pool.map(validate_batch, sub_batches)
             valid_batch = [m for group in results for m in group]
-            valid_count = len(valid_batch)
+            logger.info(f"[CPU] Batch {batch_id}: validated {len(batch)} → {len(valid_batch)} valid in {time.time() - start:.2f}s")
 
             if valid_batch:
                 start_gpu = time.time()
@@ -155,7 +152,8 @@ def main():
                     path_indices=path_indices,
                     threads_per_block=threads_per_block
                 )
-                derived_count = len(pubkeys)
+                logger.info(f"[GPU] Derived {len(pubkeys)} pubkeys in {time.time() - start_gpu:.2f}s")
+
                 pubkeys = [bytes(p) for p in pubkeys]
                 pubkey_matrix = np.array([np.frombuffer(p, dtype=np.uint8) for p in pubkeys])
                 matched_idx = batch_match(pubkey_matrix, target_pubkey_bytes)
@@ -175,13 +173,7 @@ def main():
                     sample_log.write(f"{valid_batch[idx]} → {pubkeys[idx].hex()}\n")
                     sample_log.flush()
 
-                total_pubkeys += derived_count
-            else:
-                derived_count = 0
-
-            latest_log_info['batch_id'] = batch_id
-            latest_log_info['valid_count'] = valid_count
-            latest_log_info['derived_count'] = derived_count
+                total_pubkeys += len(pubkeys)
 
             if batch_id % 10 == 0:
                 with open(checkpoint_path, "w") as f:
@@ -193,6 +185,7 @@ def main():
     shm.close()
     shm.unlink()
     logger.info(f"[✓] Total pubkeys derived: {total_pubkeys}")
+
 
 if __name__ == "__main__":
     main()
