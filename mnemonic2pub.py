@@ -80,8 +80,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 custom_words = """
-fire cigar embark nephew trophy question bottom umbrella tomorrow oak sock ski safe crane glimpse same
-draft outer slide penalty attack march hard unable between join other life index divert refuse endless awkward wine select
+fire...
 """.split()
 
 path_indices = [44 | 0x80000000, 195 | 0x80000000, 0 | 0x80000000, 0, 0]
@@ -92,7 +91,7 @@ batch_size_cpu = 240000
 sub_batch_size = 30000
 
 checkpoint_path = "progress_checkpoint.txt"
-target_pubkey_hex = "04647192caf03f0475036c4f6c83c8a5b6824ef4241a48827b5e3a65196e0a74862566fc99a738eee34a923194824564c0c7043e0cc07c1e105ab6203f11188b52"
+target_pubkey_hex = "04..."
 target_pubkey_bytes = np.frombuffer(bytes.fromhex(target_pubkey_hex), dtype=np.uint8)
 
 
