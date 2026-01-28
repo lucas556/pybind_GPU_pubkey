@@ -1,5 +1,16 @@
 
+
 ### 代码说明
+
+#### 最新
+```
+最新:
+1. 修正 GPUHMAC.cuh  GPUPBKDF2.cuh  GPUSHA512.cuh 之间的关系,增加批量batch
+2. secp256k1使用多进程并发 解决GPU等待CPU的问题 多核并行/去掉 verify(IL) → ECC 调用次数减少一点/去掉 verify(IL) → ECC 调用次数/缓存 pub + pubkey_tweak_add 代替重复 k·G 
+3. 当前速度90k/s(3080)
+4. 出于安全考虑 不在公开最新版本
+```
+
 ```
 secp256k1 使用libsecp256k1 : https://github.com/bitcoin-core/secp256k1
 助记词验证使用的hashlib.sha256
