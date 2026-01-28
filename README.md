@@ -4,7 +4,7 @@
 
 #### 最新
 ```
-最新:
+
 1. 修正 GPUHMAC.cuh  GPUPBKDF2.cuh  GPUSHA512.cuh 之间的关系,增加批量batch
 2. secp256k1使用多进程并发 解决GPU等待CPU的问题 多核并行/去掉 verify(IL) → ECC 调用次数减少一点/去掉 verify(IL) → ECC 调用次数/缓存 pub + pubkey_tweak_add 代替重复 k·G 
 3. 当前速度 90k/s(3080) 满足3080显卡的最大速度
